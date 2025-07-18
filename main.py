@@ -1,46 +1,128 @@
-import logging import asyncio import os from aiogram import Bot, Dispatcher, F from aiogram.enums import ParseMode from aiogram.types import Message, FSInputFile, InlineKeyboardMarkup, InlineKeyboardButton from aiogram.filters import CommandStart, Command
+import asyncio
+from aiogram import Bot, Dispatcher, F
+from aiogram.types import Message, FSInputFile
+from aiogram.enums import ParseMode
+from aiogram.types import ReplyKeyboardMarkup, KeyboardButton
+from aiogram.filters import CommandStart
+from aiogram.utils.keyboard import ReplyKeyboardBuilder
+import json
+import os
+from aiogram.fsm.context import FSMContext
+from aiogram.fsm.state import State, StatesGroup
 
-API_TOKEN = os.getenv("BOT_TOKEN") ADMIN_ID = 6733100026 CHANNELS = ["@shaxsiy_blog1o", "@kinoda23"]
+BOT_TOKEN = os.getenv("BOT_TOKEN")
+ADMIN_ID = int(os.getenv("ADMIN_ID"))
+CHANNELS = os.getenv("CHANNELS").split(',')
 
-bot = Bot(token=API_TOKEN, parse_mode=ParseMode.HTML) dp = Dispatcher()
+bot = Bot(token=BOT_TOKEN, parse_mode=ParseMode.HTML)
+dp = Dispatcher()
 
-Fayllar bazasi (memory uchun, Render'da DB o'rniga vaqtincha ishlatamiz)
+DATA_FILE = "videos.json"
+USERS_FILE = "users.json"
 
-movies = {} users = set() admin_ids = {ADMIN_ID}
+class AddVideo(StatesGroup):
+    waiting_for_title = State()
 
-Inline button - obuna tekshiruvi
+video_data = {}
 
-async def check_sub_channels(user_id): for ch in CHANNELS: try: member = await bot.get_chat_member(chat_id=ch, user_id=user_id) if member.status in ("left", "kicked"): return False except: return False return True
+# === Foydalanuvchini saqlash ===
+async def save_user(user_id):
+    try:
+        with open(USERS_FILE, 'r') as f:
+            users = json.load(f)
+    except:
+        users = []
 
-def subscribe_keyboard(): btns = [ [InlineKeyboardButton(text=f"📢 {ch}", url=f"https://t.me/{ch[1:]}")] for ch in CHANNELS ] btns.append([InlineKeyboardButton(text="✅ Tekshirdim", callback_data="check_sub")]) return InlineKeyboardMarkup(inline_keyboard=btns)
+    if user_id not in users:
+        users.append(user_id)
+        with open(USERS_FILE, 'w') as f:
+            json.dump(users, f)
 
-Start komandasi
+# === Video ma'lumotlarini saqlash ===
+def load_videos():
+    if os.path.exists(DATA_FILE):
+        with open(DATA_FILE, 'r') as f:
+            return json.load(f)
+    return {}
 
-@dp.message(CommandStart()) async def cmd_start(message: Message): users.add(message.from_user.id) if not await check_sub_channels(message.from_user.id): await message.answer("Botdan foydalanish uchun quyidagi kanallarga obuna bo‘ling:", reply_markup=subscribe_keyboard()) return await message.answer("🎬 Kino raqamini yuboring yoki /panel orqali film yuklang")
+def save_videos(videos):
+    with open(DATA_FILE, 'w') as f:
+        json.dump(videos, f)
 
-Video ID yuborilganda
+videos = load_videos()
 
-@dp.message(F.text.regexp(r"^\d+$")) async def get_movie(message: Message): if not await check_sub_channels(message.from_user.id): await message.answer("⛔ Avval kanallarga obuna bo‘ling:", reply_markup=subscribe_keyboard()) return movie_id = int(message.text) movie = movies.get(movie_id) if movie: await message.answer_video(video=FSInputFile(movie["file"]), caption=f"🎬 <b>{movie['title']}</b>") else: await message.answer("❌ Bunday raqamli kino topilmadi.")
+# === /start ===
+@dp.message(CommandStart())
+async def start(message: Message):
+    await save_user(message.from_user.id)
+    await message.answer("🎬 Assalomu alaykum! Kino ID raqamini yuboring, men sizga videoni jo'nataman.")
 
-Admin panel
+# === Admin video yuborsa ===
+@dp.message(F.video)
+async def handle_video(message: Message, state: FSMContext):
+    if message.from_user.id != ADMIN_ID:
+        return await message.answer("❌ Siz admin emassiz.")
+    file_id = message.video.file_id
+    video_data[message.from_user.id] = file_id
+    await message.answer("📌 Kino nomini kiriting:")
+    await state.set_state(AddVideo.waiting_for_title)
 
-@dp.message(Command("panel")) async def admin_panel(message: Message): if message.from_user.id in admin_ids: await message.answer("📥 Kino yuboring: Avval nomini yozing, keyin videoni jo'nating") else: await message.answer("⛔ Bu buyruq faqat admin uchun.")
+# === Kino nomini yozganda ===
+@dp.message(AddVideo.waiting_for_title)
+async def set_title(message: Message, state: FSMContext):
+    title = message.text
+    user_id = message.from_user.id
+    file_id = video_data.get(user_id)
+    if not file_id:
+        return await message.answer("Xatolik yuz berdi.")
+    
+    video_id = str(len(videos) + 1)
+    videos[video_id] = {"file_id": file_id, "title": title}
+    save_videos(videos)
 
-Video qabul qilish
+    # Xabar yuborish
+    try:
+        with open(USERS_FILE, 'r') as f:
+            users = json.load(f)
+    except:
+        users = []
 
-current_titles = {}
+    for uid in users:
+        try:
+            await bot.send_message(uid, f"🎬 <b>Yangi kino:</b> {title}\n📥 ID: <code>{video_id}</code>")
+        except:
+            pass
 
-@dp.message(F.video) async def receive_video(message: Message): if message.from_user.id not in admin_ids: return title = current_titles.get(message.from_user.id) if not title: await message.answer("⛔ Avval kino nomini yozing") return file = await bot.download(message.video.file_id, destination=f"videos/{message.video.file_id}.mp4") movie_id = len(movies) + 1 movies[movie_id] = {"title": title, "file": file.name} await message.answer(f"✅ Kino saqlandi! Raqami: <b>{movie_id}</b>") # Notify all users for uid in users: try: await bot.send_message(uid, f"🆕 Yangi kino qo‘shildi: <b>{title}</b>\nKo‘rish uchun raqam: <b>{movie_id}</b>") except: continue del current_titles[message.from_user.id]
+    await message.answer(f"✅ Kino saqlandi!\nID: <code>{video_id}</code>")
+    await state.clear()
 
-@dp.message(F.text) async def save_title(message: Message): if message.from_user.id in admin_ids: current_titles[message.from_user.id] = message.text await message.answer("✅ Endi kinoni yuboring")
+# === Foydalanuvchi ID yuborsa ===
+@dp.message(F.text.regexp(r"^\d+$"))
+async def send_video_by_id(message: Message):
+    await save_user(message.from_user.id)
 
-Subscribe button tekshirish
+    for channel in CHANNELS:
+        chat_member = await bot.get_chat_member(channel, message.from_user.id)
+        if chat_member.status not in ['member', 'administrator', 'creator']:
+            return await message.answer(f"⛔️ Avval quyidagi kanalga a'zo bo'ling:\n@{channel}")
 
-@dp.callback_query(F.data == "check_sub") async def check_sub_callback(callback): if await check_sub_channels(callback.from_user.id): await callback.message.delete() await callback.message.answer("✅ Tashakkur! Endi botdan foydalanishingiz mumkin.") else: await callback.answer("⛔ Hali ham obuna bo‘lmagansiz!", show_alert=True)
+    vid_id = message.text.strip()
+    if vid_id not in videos:
+        return await message.answer("❌ Bunday ID topilmadi.")
+    
+    file_id = videos[vid_id]["file_id"]
+    title = videos[vid_id]["title"]
+    await message.answer_video(file_id, caption=f"🎬 {title}")
 
-Run
-
-async def main(): logging.basicConfig(level=logging.INFO) os.makedirs("videos", exist_ok=True) await dp.start_polling(bot)
-
-if name == 'main': asyncio.run(main())
-
+# === Statistika ===
+@dp.message(F.text == "/stat" or F.text == "📊 Statistika")
+async def stat(message: Message):
+    if message.from_user.id != ADMIN_ID:
+        return
+    try:
+        with open(USERS_FILE, 'r') as f:
+            users = json.load(f)
+        count = len(users)
+    except:
+        count = 0
+    await message.answer(f"📊 Bot foydalanuvchilari soni: <b>{count}</b>")
