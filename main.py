@@ -1,37 +1,46 @@
-import logging import os from aiogram import Bot, Dispatcher, F, types from aiogram.types import Message, FSInputFile, ReplyKeyboardMarkup, KeyboardButton from aiogram.enums import ParseMode from aiogram.filters import CommandStart, Command from aiogram.utils.markdown import hbold from aiogram.utils.keyboard import ReplyKeyboardBuilder from dotenv import load_dotenv
+import logging import asyncio import os from aiogram import Bot, Dispatcher, F from aiogram.enums import ParseMode from aiogram.types import Message, FSInputFile, InlineKeyboardMarkup, InlineKeyboardButton from aiogram.filters import CommandStart, Command
 
-load_dotenv()
+API_TOKEN = os.getenv("BOT_TOKEN") ADMIN_ID = 6733100026 CHANNELS = ["@shaxsiy_blog1o", "@kinoda23"]
 
-BOT_TOKEN = os.getenv("BOT_TOKEN") ADMIN_ID = int(os.getenv("ADMIN_ID")) CHANNELS = ["@shaxsiy_blog1o", "@kinoda23"]
+bot = Bot(token=API_TOKEN, parse_mode=ParseMode.HTML) dp = Dispatcher()
 
-bot = Bot(token=BOT_TOKEN, parse_mode=ParseMode.HTML) dp = Dispatcher()
+Fayllar bazasi (memory uchun, Render'da DB o'rniga vaqtincha ishlatamiz)
 
-videos = {} users = set()
+movies = {} users = set() admin_ids = {ADMIN_ID}
 
-keyboard = ReplyKeyboardMarkup( keyboard=[[KeyboardButton(text="📽 Kino izlash")]], resize_keyboard=True )
+Inline button - obuna tekshiruvi
 
-@dp.message(CommandStart()) async def start_handler(message: Message): users.add(message.chat.id) await message.answer(f"Salom {hbold(message.from_user.first_name)}!\nID raqam orqali kino izlash uchun tugmani bosing.", reply_markup=keyboard)
+async def check_sub_channels(user_id): for ch in CHANNELS: try: member = await bot.get_chat_member(chat_id=ch, user_id=user_id) if member.status in ("left", "kicked"): return False except: return False return True
 
-@dp.message(Command("add")) async def add_video(message: Message): if message.chat.id != ADMIN_ID: return if not message.reply_to_message or not message.reply_to_message.video: await message.answer("Iltimos, kinoga javoban /add deb yozing.") return
+def subscribe_keyboard(): btns = [ [InlineKeyboardButton(text=f"📢 {ch}", url=f"https://t.me/{ch[1:]}")] for ch in CHANNELS ] btns.append([InlineKeyboardButton(text="✅ Tekshirdim", callback_data="check_sub")]) return InlineKeyboardMarkup(inline_keyboard=btns)
 
-video = message.reply_to_message.video
-caption = message.reply_to_message.caption or ""
-video_id = len(videos) + 1
-videos[video_id] = {"file_id": video.file_id, "caption": caption}
+Start komandasi
 
-for user_id in users:
-    try:
-        await bot.send_video(user_id, video.file_id, caption=f"<b>Yangi kino qo‘shildi!</b>\n🎬 Nomi: {caption}\n🆔 ID: {video_id}")
-    except Exception as e:
-        logging.error(f"Xatolik foydalanuvchiga yuborishda: {e}")
+@dp.message(CommandStart()) async def cmd_start(message: Message): users.add(message.from_user.id) if not await check_sub_channels(message.from_user.id): await message.answer("Botdan foydalanish uchun quyidagi kanallarga obuna bo‘ling:", reply_markup=subscribe_keyboard()) return await message.answer("🎬 Kino raqamini yuboring yoki /panel orqali film yuklang")
 
-await message.answer(f"Kino qo‘shildi! ID: {video_id}")
+Video ID yuborilganda
 
-@dp.message(Command("delete")) async def delete_video(message: Message): if message.chat.id != ADMIN_ID: return parts = message.text.split() if len(parts) != 2 or not parts[1].isdigit(): await message.answer("To‘g‘ri format: /delete 5") return video_id = int(parts[1]) if video_id in videos: del videos[video_id] await message.answer(f"Kino o‘chirildi: ID {video_id}") else: await message.answer("Bunday ID topilmadi.")
+@dp.message(F.text.regexp(r"^\d+$")) async def get_movie(message: Message): if not await check_sub_channels(message.from_user.id): await message.answer("⛔ Avval kanallarga obuna bo‘ling:", reply_markup=subscribe_keyboard()) return movie_id = int(message.text) movie = movies.get(movie_id) if movie: await message.answer_video(video=FSInputFile(movie["file"]), caption=f"🎬 <b>{movie['title']}</b>") else: await message.answer("❌ Bunday raqamli kino topilmadi.")
 
-@dp.message(Command("stats")) async def stats(message: Message): if message.chat.id == ADMIN_ID: await message.answer(f"📊 Foydalanuvchilar soni: {len(users)}\n🎞 Kinolar soni: {len(videos)}")
+Admin panel
 
-@dp.message(F.text.regexp("^\d+$")) async def send_video_by_id(message: Message): video_id = int(message.text) video = videos.get(video_id) if video: await message.answer_video(video["file_id"], caption=video["caption"]) else: await message.answer("Bunday ID topilmadi. Iltimos, boshqa raqam kiriting.")
+@dp.message(Command("panel")) async def admin_panel(message: Message): if message.from_user.id in admin_ids: await message.answer("📥 Kino yuboring: Avval nomini yozing, keyin videoni jo'nating") else: await message.answer("⛔ Bu buyruq faqat admin uchun.")
 
-if name == 'main': import asyncio logging.basicConfig(level=logging.INFO) asyncio.run(dp.start_polling(bot))
+Video qabul qilish
+
+current_titles = {}
+
+@dp.message(F.video) async def receive_video(message: Message): if message.from_user.id not in admin_ids: return title = current_titles.get(message.from_user.id) if not title: await message.answer("⛔ Avval kino nomini yozing") return file = await bot.download(message.video.file_id, destination=f"videos/{message.video.file_id}.mp4") movie_id = len(movies) + 1 movies[movie_id] = {"title": title, "file": file.name} await message.answer(f"✅ Kino saqlandi! Raqami: <b>{movie_id}</b>") # Notify all users for uid in users: try: await bot.send_message(uid, f"🆕 Yangi kino qo‘shildi: <b>{title}</b>\nKo‘rish uchun raqam: <b>{movie_id}</b>") except: continue del current_titles[message.from_user.id]
+
+@dp.message(F.text) async def save_title(message: Message): if message.from_user.id in admin_ids: current_titles[message.from_user.id] = message.text await message.answer("✅ Endi kinoni yuboring")
+
+Subscribe button tekshirish
+
+@dp.callback_query(F.data == "check_sub") async def check_sub_callback(callback): if await check_sub_channels(callback.from_user.id): await callback.message.delete() await callback.message.answer("✅ Tashakkur! Endi botdan foydalanishingiz mumkin.") else: await callback.answer("⛔ Hali ham obuna bo‘lmagansiz!", show_alert=True)
+
+Run
+
+async def main(): logging.basicConfig(level=logging.INFO) os.makedirs("videos", exist_ok=True) await dp.start_polling(bot)
+
+if name == 'main': asyncio.run(main())
 
